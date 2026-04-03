@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - displayName: string (optional)
+    //   - email: string (required, format: email)
+    //   - photoURL: string (optional)
+    //   - mobile: string (optional)
+    //   - role: string (required, enum: ["admin", "organizer", "manager", "scorer", "player", "viewer"])
+    //   - battingStyle: string (optional)
+    //   - bowlingStyle: string (optional)
+    //   - playerRole: string (optional)
+    //   - stats: map (optional)
+    //
+    // Collection: teams
+    // Document ID: {teamId}
+    // Fields:
+    //   - name: string (required)
+    //   - logo: string (optional)
+    //   - captainId: string (optional)
+    //   - wicketKeeperId: string (optional)
+    //   - managerId: string (required)
+    //   - playerIds: list (optional)
+    //   - stats: map (optional)
+    //
+    // Collection: matches
+    // Document ID: {matchId}
+    // Fields:
+    //   - teamAId: string (required)
+    //   - teamBId: string (required)
+    //   - format: string (required)
+    //   - overs: number (required)
+    //   - venue: string (optional)
+    //   - date: string (optional, format: date-time)
+    //   - status: string (required, enum: ["upcoming", "live", "completed", "abandoned"])
+    //   - tossWinnerId: string (optional)
+    //   - tossDecision: string (optional)
+    //   - scorerId: string (optional)
+    //   - scorecard: map (optional)
+    //   - currentInnings: number (optional)
+    //
+    // Collection: tournaments
+    // Document ID: {tournamentId}
+    // Fields:
+    //   - name: string (required)
+    //   - organizerId: string (required)
+    //   - teamIds: list (optional)
+    //   - matchIds: list (optional)
+    //   - status: string (required, enum: ["upcoming", "ongoing", "completed"])
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+         (request.auth.token.email == "ankitpatelnavyug@gmail.com"));
+    }
+
+    function isOrganizer() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'organizer') || isAdmin());
+    }
+
+    function isScorer() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'scorer') || isAdmin());
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function validString(field, maxLen) {
+      return request.resource.data[field] is string && request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (!('displayName' in data) || validString('displayName', 100)) &&
+             data.role in ["admin", "organizer", "manager", "scorer", "player", "viewer"] &&
+             (data.role != 'admin' || isAdmin());
+    }
+
+    function isValidTeam(data) {
+      return data.keys().hasAll(['name', 'managerId']) &&
+             validString('name', 100) &&
+             data.managerId is string &&
+             (!('playerIds' in data) || data.playerIds is list);
+    }
+
+    function isValidMatch(data) {
+      return data.keys().hasAll(['teamAId', 'teamBId', 'format', 'overs', 'status']) &&
+             data.teamAId is string && data.teamBId is string &&
+             data.format in ['T20', 'ODI', 'Test', 'Custom'] &&
+             data.overs is number && data.overs > 0 && data.overs <= 50 &&
+             data.status in ["upcoming", "live", "completed", "abandoned"];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      request.resource.data.role == resource.data.role;
+      allow delete: if isAdmin();
+    }
+
+    match /teams/{teamId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidTeam(request.resource.data);
+      allow update: if isAuthenticated() && isValidTeam(request.resource.data) && (request.auth.uid == resource.data.managerId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /matches/{matchId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidMatch(request.resource.data);
+      allow update: if isAuthenticated() && isValidMatch(request.resource.data) && (request.auth.uid == resource.data.scorerId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /tournaments/{tournamentId} {
+      allow read: if true;
+      allow create: if isOrganizer();
+      allow update: if isAuthenticated() && (request.auth.uid == resource.data.organizerId || isAdmin());
+      allow delete: if isAdmin();
+    }
+  }
+}
